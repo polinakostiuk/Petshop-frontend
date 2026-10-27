@@ -1,0 +1,23 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="asgiref" />
+          <option value="certifi" />
+          <option value="Django" />
+          <option value="iniconfig" />
+          <option value="mypy" />
+          <option value="mypy_extensions" />
+          <option value="packaging" />
+          <option value="pathspec" />
+          <option value="pluggy" />
+          <option value="Pygments" />
+          <option value="pytest" />
+          <option value="typing_extensions" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

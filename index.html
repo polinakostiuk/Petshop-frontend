@@ -17,7 +17,7 @@
     <div id="products-container" class="product-grid">Завантаження товарів...</div>
 
     <script>
-        fetch('http://127.0.0.1:8000/api/products')
+        fetch('http://127.0.0.1:8001/api/products')
             .then(response => response.json())
             .then(data => {
                 const container = document.getElementById('products-container');
