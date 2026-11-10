@@ -3,79 +3,462 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PetShop: каталог товарів</title>
+    <title>PetShop</title>
     <style>
-        body { font-family: system-ui, sans-serif; margin: 40px; background-color: #f9f9f9; }
+        body { font-family: system-ui, sans-serif; margin: 0; background-color: #f9f9f9; color: #222; }
+        nav { display: flex; align-items: center; gap: 16px; padding: 14px 40px; background: #fff; border-bottom: 1px solid #ddd; }
+        nav .brand { font-weight: bold; font-size: 1.2em; margin-right: auto; }
+        nav a, nav button { color: #1565c0; text-decoration: none; background: none; border: none; font: inherit; cursor: pointer; padding: 0; }
+        nav a:hover, nav button:hover { text-decoration: underline; }
+        nav .user-name { font-weight: 600; }
+        main { margin: 40px; }
         h1 { color: #333; }
         .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }
         .product-card { border: 1px solid #ddd; padding: 20px; border-radius: 8px; background: #fff; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05); }
         .product-card h3 { margin-top: 0; }
         .price { font-weight: bold; color: #2e7d32; font-size: 1.1em; }
         .info-msg { font-style: italic; color: #666; }
-        .error-msg { color: #c62828; }
+        .error-msg, .form-error, .field-error { color: #c62828; }
+        .success-msg { color: #2e7d32; }
+        .field-error { font-size: 0.9em; min-height: 1.1em; margin: 2px 0 10px; }
+        form { max-width: 420px; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 24px; }
+        label { display: block; font-weight: 600; margin-top: 8px; }
+        input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; border: 1px solid #bbb; border-radius: 4px; font: inherit; }
+        form button { margin-top: 12px; padding: 10px 18px; border: none; border-radius: 4px; background: #1565c0; color: #fff; font: inherit; cursor: pointer; }
+        form button:disabled { background: #90a4ae; cursor: default; }
+        .profile { max-width: 420px; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 24px; }
+        .profile dt { font-weight: 600; margin-top: 10px; }
+        .profile dd { margin: 2px 0 0; }
     </style>
 </head>
 <body>
-    <h1>Каталог товарів PetShop</h1>
-    <div id="products" class="product-grid">
-        <p class="info-msg">Завантаження товарів...</p>
-    </div>
+    <nav id="nav"></nav>
+    <main id="app"></main>
 
     <script>
+        // ---------------------------------------------------------------
+        // 1. Налаштування й робота з токенами
+        // ---------------------------------------------------------------
         const API_URL = 'http://127.0.0.1:8000/api';
-        const container = document.getElementById('products');
 
-        function showMessage(text, className) {
-            container.innerHTML = '';
-            const message = document.createElement('p');
-            message.className = className;
-            message.textContent = text;
-            container.appendChild(message);
+        // Токени зберігаємо в localStorage: вони переживають перезавантаження
+        // сторінки. Мінус: JavaScript сторінки може їх прочитати, тому
+        // дані з API ми завжди вставляємо через textContent (без innerHTML).
+        const KEYS = { access: 'petshop_access', refresh: 'petshop_refresh', user: 'petshop_user' };
+
+        function storageGet(key) {
+            try { return localStorage.getItem(key); } catch (e) { return null; }
+        }
+        function storageSet(key, value) {
+            try { localStorage.setItem(key, value); } catch (e) { /* сховище недоступне */ }
+        }
+        function storageRemove(key) {
+            try { localStorage.removeItem(key); } catch (e) { /* сховище недоступне */ }
+        }
+
+        function saveSession(data) {
+            storageSet(KEYS.access, data.access);
+            storageSet(KEYS.refresh, data.refresh);
+            storageSet(KEYS.user, JSON.stringify(data.user));
+        }
+
+        // Вихід: просто видаляємо токени на клієнті (так вимагає завдання)
+        function clearSession() {
+            Object.values(KEYS).forEach(storageRemove);
+        }
+
+        // Користувач вважається авторизованим, якщо в нас є токени
+        function isLoggedIn() {
+            return Boolean(storageGet(KEYS.access) && storageGet(KEYS.refresh));
+        }
+
+        function currentUser() {
+            try { return JSON.parse(storageGet(KEYS.user)); } catch (e) { return null; }
+        }
+
+        // ---------------------------------------------------------------
+        // 2. Запити до API (з автоматичним оновленням access-токена)
+        // ---------------------------------------------------------------
+        let refreshPromise = null;
+
+        // Просить бекенд видати новий access за збереженим refresh-токеном.
+        // Якщо кілька запитів одночасно отримали 401, оновлюємо лише один раз.
+        function refreshAccess() {
+            if (refreshPromise) return refreshPromise;
+            refreshPromise = fetch(`${API_URL}/auth/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refresh: storageGet(KEYS.refresh) })
+            })
+                .then(response => response.ok ? response.json() : null)
+                .then(data => {
+                    if (!data) return false;
+                    storageSet(KEYS.access, data.access);
+                    return true;
+                })
+                .catch(() => false)
+                .finally(() => { refreshPromise = null; });
+            return refreshPromise;
+        }
+
+        function sendRequest(path, method, body, withToken) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (withToken && storageGet(KEYS.access)) {
+                headers['Authorization'] = 'Bearer ' + storageGet(KEYS.access);
+            }
+            return fetch(`${API_URL}${path}`, {
+                method,
+                headers,
+                body: body ? JSON.stringify(body) : undefined
+            }).then(response =>
+                // тіло може бути порожнім (наприклад, 204), тому catch
+                response.json().catch(() => null).then(data => ({ status: response.status, data }))
+            );
+        }
+
+        // auth = true: запит до захищеного ендпоінта.
+        // Якщо access прострочився (401), один раз оновлюємо його через refresh
+        // і повторюємо запит. Користувач при цьому нічого не помічає.
+        // Якщо refresh теж не спрацював - сесія закінчилась: очищаємо токени.
+        async function api(path, { method = 'GET', body = null, auth = false } = {}) {
+            let result = await sendRequest(path, method, body, auth);
+            if (auth && result.status === 401) {
+                if (await refreshAccess()) {
+                    result = await sendRequest(path, method, body, true);
+                }
+                if (result.status === 401) {
+                    clearSession();
+                    renderNav();
+                }
+            }
+            return result;
+        }
+
+        // ---------------------------------------------------------------
+        // 3. Допоміжні функції для побудови сторінок
+        // ---------------------------------------------------------------
+        const app = document.getElementById('app');
+        const nav = document.getElementById('nav');
+
+        function el(tag, text, className) {
+            const element = document.createElement(tag);
+            if (text !== undefined && text !== null) element.textContent = text;
+            if (className) element.className = className;
+            return element;
+        }
+
+        function clear(node) {
+            while (node.firstChild) node.removeChild(node.firstChild);
+        }
+
+        function networkMessage() {
+            return 'Не вдалося зв\'язатися з сервером. Перевірте, чи запущено бекенд ' +
+                'і чи дозволено CORS для адреси цього фронтенду.';
+        }
+
+        // Додає в форму підпис + поле + місце під текст помилки цього поля
+        function addField(form, { name, label, type = 'text', maxLength, autocomplete }) {
+            const labelElement = el('label', label);
+            labelElement.htmlFor = 'field-' + name;
+            const input = document.createElement('input');
+            input.id = 'field-' + name;
+            input.name = name;
+            input.type = type;
+            if (maxLength) input.maxLength = maxLength;
+            if (autocomplete) input.autocomplete = autocomplete;
+            const error = el('div', '', 'field-error');
+            error.dataset.for = name;
+            form.append(labelElement, input, error);
+        }
+
+        function clearErrors(form) {
+            form.querySelectorAll('.field-error').forEach(node => { node.textContent = ''; });
+            form.querySelector('.form-error').textContent = '';
+        }
+
+        // Показує помилки з відповіді бекенду: details = {поле: [повідомлення]}
+        function showErrors(form, data) {
+            const general = form.querySelector('.form-error');
+            if (!data || !data.error) {
+                general.textContent = 'Сталася невідома помилка. Спробуйте ще раз.';
+                return;
+            }
+            if (!data.details) {
+                general.textContent = data.error;
+                return;
+            }
+            Object.entries(data.details).forEach(([name, messages]) => {
+                const target = form.querySelector(`.field-error[data-for="${name}"]`);
+                const text = [].concat(messages).join(' ');
+                if (target) target.textContent = text; else general.textContent = text;
+            });
+        }
+
+        function formValues(form) {
+            const values = {};
+            new FormData(form).forEach((value, key) => { values[key] = value; });
+            return values;
+        }
+
+        // ---------------------------------------------------------------
+        // 4. Сторінки
+        // ---------------------------------------------------------------
+
+        // Сторінка 3: каталог, доступний усім (токен не потрібен)
+        async function renderCatalog() {
+            app.append(el('h1', 'Каталог товарів PetShop'));
+            const container = el('div', null, 'product-grid');
+            container.append(el('p', 'Завантаження товарів...', 'info-msg'));
+            app.append(container);
+
+            let result;
+            try {
+                result = await api('/products');
+            } catch (error) {
+                clear(container);
+                container.append(el('p', networkMessage(), 'error-msg'));
+                return;
+            }
+            clear(container);
+            if (result.status !== 200) {
+                const text = (result.data && result.data.error) || `Помилка сервера (${result.status})`;
+                container.append(el('p', text, 'error-msg'));
+            } else if (result.data.length === 0) {
+                container.append(el('p', 'Товарів поки немає.', 'info-msg'));
+            } else {
+                result.data.forEach(product => container.append(createCard(product)));
+            }
         }
 
         function createCard(product) {
-            const card = document.createElement('div');
-            card.className = 'product-card';
-
-            const lines = [
-                ['h3', product.name, ''],
-                ['p', `${product.price} грн`, 'price'],
-                ['p', `Категорія: ${product.category_name}`, ''],
-                ['p', `Бренд: ${product.brand_name}`, ''],
-                ['p', `В наявності: ${product.stock} шт.`, '']
-            ];
-            lines.forEach(([tag, text, className]) => {
-                const element = document.createElement(tag);
-                element.textContent = text;
-                element.className = className;
-                card.appendChild(element);
-            });
+            const card = el('div', null, 'product-card');
+            card.append(
+                el('h3', product.name),
+                el('p', `${product.price} грн`, 'price'),
+                el('p', `Категорія: ${product.category_name}`),
+                el('p', `Бренд: ${product.brand_name}`),
+                el('p', `В наявності: ${product.stock} шт.`)
+            );
             return card;
         }
 
-        fetch(`${API_URL}/products`)
-            .then(response => response.json().then(data => {
-                if (!response.ok) {
-                    throw new Error(data.error || `Помилка сервера (${response.status})`);
-                }
-                return data;
-            }))
-            .then(products => {
-                if (products.length === 0) {
-                    showMessage('Товарів поки немає.', 'info-msg');
+        // Сторінка 1: реєстрація
+        function renderRegister() {
+            app.append(el('h1', 'Реєстрація'));
+            const form = document.createElement('form');
+            form.noValidate = true; // помилки показуємо самі, українською
+            addField(form, { name: 'username', label: 'Ім\'я користувача *', maxLength: 150, autocomplete: 'username' });
+            addField(form, { name: 'first_name', label: 'Ім\'я', maxLength: 150, autocomplete: 'given-name' });
+            addField(form, { name: 'last_name', label: 'Прізвище', maxLength: 150, autocomplete: 'family-name' });
+            addField(form, { name: 'email', label: 'Email *', type: 'email', maxLength: 254, autocomplete: 'email' });
+            addField(form, { name: 'password', label: 'Пароль * (мінімум 8 символів)', type: 'password', maxLength: 128, autocomplete: 'new-password' });
+            addField(form, { name: 'password_confirmation', label: 'Повторіть пароль *', type: 'password', maxLength: 128, autocomplete: 'new-password' });
+            form.append(el('p', '', 'form-error'));
+            const button = el('button', 'Зареєструватися');
+            button.type = 'submit';
+            form.append(button);
+            form.append(el('p', 'Вже є акаунт? '));
+            const loginLink = el('a', 'Увійти');
+            loginLink.href = '#/login';
+            form.lastChild.append(loginLink);
+            app.append(form);
+
+            form.addEventListener('submit', async event => {
+                event.preventDefault();
+                clearErrors(form);
+                const values = formValues(form);
+
+                // Швидка перевірка в браузері. Головна перевірка все одно на бекенді.
+                const missing = ['username', 'email', 'password', 'password_confirmation']
+                    .filter(name => !values[name].trim());
+                if (missing.length > 0) {
+                    missing.forEach(name => {
+                        form.querySelector(`.field-error[data-for="${name}"]`).textContent = 'Це поле обов\'язкове.';
+                    });
                     return;
                 }
-                container.innerHTML = '';
-                products.forEach(product => container.appendChild(createCard(product)));
-            })
-            .catch(error => {
-                console.error('Не вдалося отримати товари:', error);
-                showMessage(
-                    'Не вдалося завантажити товари. Перевірте, чи запущено бекенд ' +
-                    'і чи дозволено CORS для адреси цього фронтенду.',
-                    'error-msg'
-                );
+                if (values.password !== values.password_confirmation) {
+                    showErrors(form, { error: 'Некоректні дані.', details: { password_confirmation: ['Паролі не збігаються.'] } });
+                    return;
+                }
+
+                button.disabled = true;
+                try {
+                    const result = await api('/auth/register', { method: 'POST', body: values });
+                    if (result.status === 201) {
+                        go('#/login?registered=1');
+                    } else {
+                        showErrors(form, result.data);
+                    }
+                } catch (error) {
+                    form.querySelector('.form-error').textContent = networkMessage();
+                } finally {
+                    button.disabled = false;
+                }
             });
+        }
+
+        // Сторінка 2: логін
+        function renderLogin(params) {
+            app.append(el('h1', 'Вхід'));
+            if (params.get('registered')) {
+                app.append(el('p', 'Реєстрація успішна. Тепер увійдіть.', 'success-msg'));
+            }
+            const form = document.createElement('form');
+            form.noValidate = true;
+            addField(form, { name: 'username', label: 'Ім\'я користувача', maxLength: 150, autocomplete: 'username' });
+            addField(form, { name: 'password', label: 'Пароль', type: 'password', maxLength: 128, autocomplete: 'current-password' });
+            form.append(el('p', '', 'form-error'));
+            const button = el('button', 'Увійти');
+            button.type = 'submit';
+            form.append(button);
+            const hint = el('p', 'Ще немає акаунта? ');
+            const registerLink = el('a', 'Зареєструватися');
+            registerLink.href = '#/register';
+            hint.append(registerLink);
+            form.append(hint);
+            app.append(form);
+
+            form.addEventListener('submit', async event => {
+                event.preventDefault();
+                clearErrors(form);
+                const values = formValues(form);
+                button.disabled = true;
+                try {
+                    const result = await api('/auth/login', { method: 'POST', body: values });
+                    if (result.status === 200) {
+                        saveSession(result.data);
+                        // Повертаємо користувача туди, звідки його відправили на логін
+                        go(safeNext(params.get('next')));
+                    } else {
+                        showErrors(form, result.data);
+                    }
+                } catch (error) {
+                    form.querySelector('.form-error').textContent = networkMessage();
+                } finally {
+                    button.disabled = false;
+                }
+            });
+        }
+
+        // Сторінка 4: профіль, доступний лише авторизованому користувачу
+        async function renderProfile() {
+            app.append(el('h1', 'Мій профіль'));
+            const box = el('div', null, 'profile');
+            box.append(el('p', 'Завантаження...', 'info-msg'));
+            app.append(box);
+
+            let result;
+            try {
+                result = await api('/users/me', { auth: true });
+            } catch (error) {
+                clear(box);
+                box.append(el('p', networkMessage(), 'error-msg'));
+                return;
+            }
+            if (result.status === 401) {
+                // сесія закінчилась (refresh теж не допоміг) - на логін
+                go('#/login?next=' + encodeURIComponent('/profile'));
+                return;
+            }
+            clear(box);
+            if (result.status !== 200) {
+                box.append(el('p', (result.data && result.data.error) || 'Помилка сервера.', 'error-msg'));
+                return;
+            }
+            const user = result.data;
+            const list = el('dl');
+            [
+                ['Ім\'я користувача', user.username],
+                ['Ім\'я', user.first_name || '—'],
+                ['Прізвище', user.last_name || '—'],
+                ['Email', user.email],
+                ['Роль', user.is_staff ? 'Адміністратор' : 'Користувач'],
+                ['Дата реєстрації', new Date(user.date_joined).toLocaleString('uk-UA')]
+            ].forEach(([title, value]) => list.append(el('dt', title), el('dd', value)));
+            box.append(list);
+        }
+
+        // ---------------------------------------------------------------
+        // 5. Навігація та правила доступу до сторінок
+        // ---------------------------------------------------------------
+
+        // Для кожної сторінки: хто може її відкрити
+        //   public - усі, protected - лише авторизовані, guest - лише неавторизовані
+        const ROUTES = {
+            '/': { access: 'public', render: renderCatalog },
+            '/login': { access: 'guest', render: renderLogin },
+            '/register': { access: 'guest', render: renderRegister },
+            '/profile': { access: 'protected', render: renderProfile }
+        };
+
+        // Хеш виду "#/login?next=/profile" розбираємо на шлях і параметри
+        function parseHash() {
+            const raw = location.hash.slice(1) || '/';
+            const [path, query = ''] = raw.split('?');
+            return { path, params: new URLSearchParams(query) };
+        }
+
+        // next беремо лише з відомих сторінок, щоб не перейти кудись сторонні
+        function safeNext(next) {
+            return next && ROUTES[next] && ROUTES[next].access !== 'guest' ? '#' + next : '#/';
+        }
+
+        // Перехід на іншу сторінку
+        function go(hash) {
+            if (location.hash === hash) render(); else location.hash = hash;
+        }
+
+        function renderNav() {
+            clear(nav);
+            nav.append(el('span', '🐾 PetShop', 'brand'));
+            const catalog = el('a', 'Каталог');
+            catalog.href = '#/';
+            nav.append(catalog);
+
+            if (isLoggedIn()) {
+                const profile = el('a', 'Профіль');
+                profile.href = '#/profile';
+                const user = currentUser();
+                const name = user ? (user.first_name || user.username) : '';
+                const logout = el('button', 'Вийти');
+                logout.addEventListener('click', () => {
+                    clearSession();
+                    go('#/');
+                });
+                nav.append(profile, el('span', name, 'user-name'), logout);
+            } else {
+                const login = el('a', 'Увійти');
+                login.href = '#/login';
+                const register = el('a', 'Реєстрація');
+                register.href = '#/register';
+                nav.append(login, register);
+            }
+        }
+
+        function render() {
+            const { path, params } = parseHash();
+            const route = ROUTES[path] || ROUTES['/'];
+
+            // Неавторизований відкриває сторінку для авторизованих -> на логін
+            if (route.access === 'protected' && !isLoggedIn()) {
+                go('#/login?next=' + encodeURIComponent(path));
+                return;
+            }
+            // Авторизований відкриває логін або реєстрацію -> на каталог
+            if (route.access === 'guest' && isLoggedIn()) {
+                go('#/');
+                return;
+            }
+            renderNav();
+            clear(app);
+            route.render(params);
+        }
+
+        window.addEventListener('hashchange', render);
+        // Якщо користувач вийшов або увійшов в іншій вкладці - оновлюємо цю
+        window.addEventListener('storage', render);
+        render();
     </script>
 </body>
 </html>
